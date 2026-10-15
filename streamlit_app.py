@@ -89,7 +89,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "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")
+# Inicialización directa y segura de la API Key de Groq
+GROQ_API_KEY = "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"
 client = Groq(api_key=GROQ_API_KEY)
 
 MODEL_NAME = "openai/gpt-oss-120b"
