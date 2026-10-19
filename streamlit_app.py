@@ -2,7 +2,7 @@ import os
 import json
 import base64
 import streamlit as st
-from groq import Groq
+from agent_core import get_groq_client, MODEL_NAME, tools, SYSTEM_PROMPT
 from agent_tools import search_products, get_products_by_team
 
 st.set_page_config(
@@ -39,7 +39,6 @@ st.markdown("""
         background-color: #0E1117;
     }
 
-    /* Tarjeta de la cabecera en el panel izquierdo */
     .header-card {
         background: linear-gradient(135deg, #1E2640 0%, #0F172A 100%);
         border-radius: 16px;
@@ -89,76 +88,6 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Inicialización directa y segura de la API Key de Groq
-GROQ_API_KEY = "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"
-client = Groq(api_key=GROQ_API_KEY)
-
-MODEL_NAME = "openai/gpt-oss-120b"
-
-tools = [
-    {
-        "type": "function",
-        "function": {
-            "name": "search_products",
-            "description": "Buscar productos en el catálogo comercial por palabras clave como equipo, año, marca o jerga (ej. 'Arsenal', 'adidas', '2023-24', 'retro').",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Término de búsqueda o palabras clave traducidas de la jerga comercial/futbolera."
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Número máximo de productos a retornar (por defecto 5)."
-                    }
-                },
-                "required": ["query"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_products_by_team",
-            "description": "Buscar catálogo completo de productos filtrados específicamente por el nombre de un club o selección.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "team": {
-                        "type": "string",
-                        "description": "Nombre exacto del club o selección (ej. 'Barcelona', 'Real Madrid', 'Argentina')."
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Número máximo de productos a retornar (por defecto 5)."
-                    }
-                },
-                "required": ["team"]
-            }
-        }
-    }
-]
-
-SYSTEM_PROMPT = """
-Eres "El camisetero", un Asistente Comercial Experto y Guía de Jerga Futbolera para Classic Football Shirts.
-Tu objetivo es responder consultas del usuario en lenguaje natural sobre camisetas, coleccionismo y retro fútbol.
-
-Instrucciones:
-1. Traduce la jerga del usuario (ej: "la de los invictos del Arsenal" -> query: "Arsenal 2003-04", "la de la novena del Madrid" -> query: "Real Madrid 2001-02").
-2. Usa las funciones 'search_products' o 'get_products_by_team' para obtener datos en tiempo real.
-3. Responde siempre detallando en formato tabla/markdown los siguientes campos por cada producto:
-   - Nombre del producto
-   - Precio (GBP)
-   - Talles
-   - Stock
-   - Link directo de compra
-4. Si no encuentras exactamente el producto, ofrece opciones similares encontradas o alternativas de colección.
-5. Al finalizar tu respuesta comercial, despídete exactamente con la siguiente frase:
-"¡Gracias por confiar en EL CAMISETERO ⚽
-Cualquier cosa que necesites, aquí estoy."
-"""
-
 # Layout en dos columnas: Izquierda (Buscador 35%), Derecha (Resultados 65%)
 col_left, col_right = st.columns([1, 2], gap="medium")
 
@@ -191,7 +120,6 @@ with col_right:
     results_placeholder = st.container()
 
     if submit_button and user_input.strip():
-        # Reiniciamos el historial para mantener ÚNICAMENTE la búsqueda actual
         st.session_state.messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_input}
@@ -199,83 +127,90 @@ with col_right:
 
         with results_placeholder:
             with st.spinner("El camisetero está consultando la API..."):
-                max_turns = 3
-                turns = 0
-                finalized = False
-                
-                while turns < max_turns:
-                    turns += 1
+                try:
+                    client = get_groq_client()
+                    max_turns = 3
+                    turns = 0
+                    finalized = False
                     
-                    response = client.chat.completions.create(
-                        model=MODEL_NAME,
-                        messages=st.session_state.messages,
-                        tools=tools,
-                        tool_choice="auto",
-                        temperature=0.2
-                    )
-                    
-                    response_message = response.choices[0].message
-                    tool_calls = response_message.tool_calls
-
-                    if not tool_calls:
-                        final_text = response_message.content or "Aquí tienes la información solicitada."
-                        st.session_state.messages.append({"role": "assistant", "content": final_text})
-                        finalized = True
-                        break
-
-                    assistant_msg = {
-                        "role": "assistant",
-                        "content": response_message.content,
-                        "tool_calls": [
-                            {
-                                "id": tc.id,
-                                "type": "function",
-                                "function": {
-                                    "name": tc.function.name,
-                                    "arguments": tc.function.arguments
-                                }
-                            } for tc in tool_calls
-                        ]
-                    }
-                    st.session_state.messages.append(assistant_msg)
-
-                    for tool_call in tool_calls:
-                        function_name = tool_call.function.name
-                        function_args = json.loads(tool_call.function.arguments)
+                    while turns < max_turns:
+                        turns += 1
                         
-                        st.info(f"🤖 **Ejecutando consulta:** `{function_name}` con parámetros: `{function_args}`")
+                        response = client.chat.completions.create(
+                            model=MODEL_NAME,
+                            messages=st.session_state.messages,
+                            tools=tools,
+                            tool_choice="auto",
+                            temperature=0.2
+                        )
                         
-                        if function_name == "search_products":
-                            tool_output = search_products(**function_args)
-                        elif function_name == "get_products_by_team":
-                            tool_output = get_products_by_team(**function_args)
-                        else:
-                            tool_output = {"error": "Función no encontrada"}
+                        response_message = response.choices[0].message
+                        tool_calls = response_message.tool_calls
 
-                        st.session_state.messages.append({
-                            "tool_call_id": tool_call.id,
-                            "role": "tool",
-                            "name": function_name,
-                            "content": json.dumps(tool_output)
-                        })
+                        if not tool_calls:
+                            final_text = response_message.content or "Aquí tienes la información solicitada."
+                            st.session_state.messages.append({"role": "assistant", "content": final_text})
+                            finalized = True
+                            break
 
-                if not finalized:
-                    forced_messages = st.session_state.messages + [
-                        {
-                            "role": "user",
-                            "content": "Basándote exclusivamente en los resultados obtenidos arriba por las herramientas, redacta tu respuesta comercial final en texto para el usuario. No intentes llamar a más herramientas."
+                        assistant_msg = {
+                            "role": "assistant",
+                            "content": response_message.content,
+                            "tool_calls": [
+                                {
+                                    "id": tc.id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": tc.function.name,
+                                        "arguments": tc.function.arguments
+                                    }
+                                } for tc in tool_calls
+                            ]
                         }
-                    ]
-                    
-                    final_response = client.chat.completions.create(
-                        model=MODEL_NAME,
-                        messages=forced_messages
-                    )
-                    
-                    final_text = final_response.choices[0].message.content or "No se encontraron resultados exactos en el catálogo comercial."
-                    st.session_state.messages.append({"role": "assistant", "content": final_text})
+                        st.session_state.messages.append(assistant_msg)
 
-    # Renderizar únicamente los mensajes de la búsqueda actual en la columna derecha
+                        for tool_call in tool_calls:
+                            function_name = tool_call.function.name
+                            function_args = json.loads(tool_call.function.arguments)
+                            
+                            st.info(f"🤖 **Ejecutando consulta:** `{function_name}` con parámetros: `{function_args}`")
+                            
+                            if function_name == "search_products":
+                                tool_output = search_products(**function_args)
+                            elif function_name == "get_products_by_team":
+                                tool_output = get_products_by_team(**function_args)
+                            else:
+                                tool_output = {"error": "Función no encontrada"}
+
+                            st.session_state.messages.append({
+                                "tool_call_id": tool_call.id,
+                                "role": "tool",
+                                "name": function_name,
+                                "content": json.dumps(tool_output)
+                            })
+
+                    if not finalized:
+                        forced_messages = st.session_state.messages + [
+                            {
+                                "role": "user",
+                                "content": "Basándote exclusivamente en los resultados obtenidos arriba por las herramientas, redacta tu respuesta comercial final en texto para el usuario."
+                            }
+                        ]
+                        
+                        final_response = client.chat.completions.create(
+                            model=MODEL_NAME,
+                            messages=forced_messages
+                        )
+                        
+                        final_text = final_response.choices[0].message.content or "No se encontraron resultados exactos."
+                        st.session_state.messages.append({"role": "assistant", "content": final_text})
+
+                except Exception as e:
+                    error_msg = f"⚠️ **Error en el sistema:** No se pudo procesar la consulta correctamente ({str(e)})."
+                    st.error(error_msg)
+                    st.session_state.messages.append({"role": "assistant", "content": error_msg})
+
+    # Renderizar únicamente los mensajes de la búsqueda actual
     with results_placeholder:
         if "messages" in st.session_state:
             for message in st.session_state.messages:
